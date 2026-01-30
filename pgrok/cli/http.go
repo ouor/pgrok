@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 
 	"github.com/pgrok/pgrok/internal/dynamicforward"
 	"github.com/pgrok/pgrok/internal/strutil"
@@ -61,6 +59,10 @@ func actionHTTP(c *cli.Context) error {
 		)
 	}
 	log.Debug("Loaded config", "file", configPath)
+
+	if err := config.ApplyProfile(c.String("profile")); err != nil {
+		log.Fatal("Failed to apply profile", "error", err)
+	}
 
 	defaultForwardAddr := strutil.Coalesce(
 		deriveHTTPForwardAddress(c.Args().First()),
@@ -123,27 +125,6 @@ func actionHTTP(c *cli.Context) error {
 			cooldownAfter = time.Now().Add(time.Minute)
 		}
 	}
-}
-
-type Config struct {
-	RemoteAddr      string `yaml:"remote_addr"`
-	ForwardAddr     string `yaml:"forward_addr"`
-	Token           string `yaml:"token"`
-	DynamicForwards string `yaml:"dynamic_forwards"`
-}
-
-func loadConfig(configPath string) (*Config, error) {
-	p, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, errors.Wrap(err, "read file")
-	}
-
-	var config Config
-	err = yaml.Unmarshal(p, &config)
-	if err != nil {
-		return nil, errors.Wrap(err, "unmarshal")
-	}
-	return &config, nil
 }
 
 const (

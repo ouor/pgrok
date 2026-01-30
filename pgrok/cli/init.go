@@ -70,33 +70,50 @@ func deriveHTTPForwardAddress(addr string) string {
 }
 
 func actionInit(c *cli.Context) error {
-	const configTemplate = `# The address of the remote SSH server.
-remote_addr: "%s"
-# The address to forward requests to.
-forward_addr: "%s"
-
-# The authentication token.
-token: "%s"
-
-# Dynamic forward rules and use "forward_addr" as catch-all.
-#dynamic_forwards: |
-#  /api http://localhost:8080`
-	config := fmt.Sprintf(
-		configTemplate,
-		c.String("remote-addr"),
-		c.String("forward-addr"),
-		c.String("token"),
-	)
 	configPath := c.String("config")
+	config, err := loadConfig(configPath)
+	if err != nil {
+		// If fails to load, create a fresh config
+		config = &Config{Profiles: make(map[string]*Profile)}
+	}
+
+	profileName := c.String("profile")
+	remoteAddr := c.String("remote-addr")
+	forwardAddr := c.String("forward-addr")
+	token := c.String("token")
+
+	if profileName == "" {
+		// Update default profile
+		config.RemoteAddr = remoteAddr
+		config.ForwardAddr = forwardAddr
+		config.Token = token
+	} else {
+		// Update named profile
+		if config.Profiles == nil {
+			config.Profiles = make(map[string]*Profile)
+		}
+		if config.Profiles[profileName] == nil {
+			config.Profiles[profileName] = &Profile{}
+		}
+		config.Profiles[profileName].RemoteAddr = remoteAddr
+		config.Profiles[profileName].ForwardAddr = forwardAddr
+		config.Profiles[profileName].Token = token
+	}
+
 	configDir := filepath.Dir(configPath)
-	err := os.MkdirAll(configDir, os.ModePerm)
+	err = os.MkdirAll(configDir, os.ModePerm)
 	if err != nil {
 		log.Fatal("Failed to create config directory", "path", configDir, "error", err.Error())
 	}
-	err = os.WriteFile(configPath, []byte(config), 0644)
+
+	err = config.Save(configPath)
 	if err != nil {
 		log.Fatal("Failed to save config file", "path", configPath, "error", err.Error())
 	}
-	log.Info("Config file saved", "path", configPath)
+	if profileName != "" {
+		log.Info("Config profile saved", "path", configPath, "profile", profileName)
+	} else {
+		log.Info("Config file saved", "path", configPath)
+	}
 	return nil
 }

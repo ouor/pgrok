@@ -73,6 +73,10 @@ func actionTCP(c *cli.Context) error {
 	}
 	log.Debug("Loaded config", "file", configPath)
 
+	if err := config.ApplyProfile(c.String("profile")); err != nil {
+		log.Fatal("Failed to apply profile", "error", err)
+	}
+
 	forwardAddr := strutil.Coalesce(
 		deriveTCPForwardAddress(c.Args().First()),
 		c.String("forward-addr"),

@@ -42,6 +42,11 @@ func commonFlags(homeDir string) []cli.Flag {
 				return nil
 			},
 		},
+		&cli.StringFlag{
+			Name:    "profile",
+			Usage:   "The profile to use",
+			Aliases: []string{"p"},
+		},
 	}
 }
 
