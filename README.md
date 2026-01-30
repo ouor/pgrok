@@ -5,6 +5,11 @@
   <a href="https://sourcegraph.com/github.com/pgrok/pgrok"><img src="https://img.shields.io/badge/view%20on-Sourcegraph-brightgreen.svg?style=for-the-badge&logo=sourcegraph" alt="Sourcegraph"></a>
 </div>
 
+## Update note
+
+- [pgrokd: multi url and key for single user (2026-01-31)](./docs/note/20260131_server.md)
+- [pgrok: multi profile support (2026-01-31)](./docs/note/20260131_client.md)
+
 ## What?
 
 The pgrok is a multi-tenant HTTP/TCP reverse tunnel solution through remote port forwarding from the SSH protocol.
