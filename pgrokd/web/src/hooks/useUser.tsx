@@ -3,8 +3,6 @@ import { createContext, useContext } from "react";
 export interface UserContextType {
   authed: boolean;
   displayName: string;
-  token: string;
-  url: string;
 }
 
 const UserContext = createContext<UserContextType>({} as UserContextType);

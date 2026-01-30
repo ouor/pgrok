@@ -26,6 +26,7 @@ type Client struct {
 	db         *database.DB
 	serverConn *ssh.ServerConn
 	principal  *database.Principal
+	tunnel     *database.Tunnel
 	protocol   string
 	host       string
 }
@@ -79,10 +80,10 @@ func (c *Client) handleTCPIPForward(
 	switch c.protocol {
 	case "tcp":
 		// Attempt to use the same port as the last time
-		if c.principal.LastTCPPort >= proxy.TCP.PortStart && c.principal.LastTCPPort < proxy.TCP.PortEnd {
-			listener, err = net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(c.principal.LastTCPPort))
+		if c.tunnel.LastTCPPort >= proxy.TCP.PortStart && c.tunnel.LastTCPPort < proxy.TCP.PortEnd {
+			listener, err = net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(c.tunnel.LastTCPPort))
 			if err == nil {
-				port = c.principal.LastTCPPort
+				port = c.tunnel.LastTCPPort
 				break
 			}
 		}
@@ -188,15 +189,15 @@ func (c *Client) handleTCPIPForward(
 		cancel()
 	}()
 
-	if c.principal.LastTCPPort != port {
+	if c.tunnel.LastTCPPort != port {
 		// NOTE: We need to set the last TCP port regardless of the protocol to be
 		// compatible with old clients which would not send "demand" requests.
-		c.principal.LastTCPPort = port
+		c.tunnel.LastTCPPort = port
 
 		// Save the used port for the next time
-		err = c.db.UpdatePrincipalLastTCPPort(ctx, c.principal.ID, c.principal.LastTCPPort)
+		err = c.db.UpdateTunnelLastTCPPort(ctx, c.tunnel.ID, c.tunnel.LastTCPPort)
 		if err != nil {
-			c.logger.Error("Failed to update principal last TCP port",
+			c.logger.Error("Failed to update tunnel last TCP port",
 				"remote", c.serverConn.RemoteAddr(),
 				"error", err,
 			)
@@ -248,7 +249,7 @@ func (c *Client) handleServerInfo(proxy conf.Proxy, req *ssh.Request) {
 		if i := strings.Index(host, ":"); i > 0 {
 			host = host[:i]
 		}
-		hostURL = "tcp://" + host + ":" + strconv.Itoa(c.principal.LastTCPPort)
+		hostURL = "tcp://" + host + ":" + strconv.Itoa(c.tunnel.LastTCPPort)
 	case "http":
 		hostURL = proxy.Scheme + "://" + c.host
 	default:

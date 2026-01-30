@@ -76,9 +76,48 @@ func New(logWriter io.Writer, config *conf.Database) (*DB, error) {
 	sqlDB.SetMaxIdleConns(30)
 	sqlDB.SetConnMaxLifetime(time.Minute)
 
-	err = db.AutoMigrate(&Principal{}, &HostKey{})
+	err = db.AutoMigrate(&Principal{}, &HostKey{}, &Tunnel{})
 	if err != nil {
 		return nil, errors.Wrap(err, "auto migrate")
+	}
+
+	// Migrate legacy data
+	var legacyPrincipals []struct {
+		ID          int64
+		Token       string
+		Subdomain   string
+		LastTCPPort int
+	}
+	// Check if old columns exist
+	if db.Migrator().HasColumn(&Principal{}, "token") {
+		err = db.Raw("SELECT id, token, subdomain, last_tcp_port FROM principles WHERE token != ''").Scan(&legacyPrincipals).Error
+		if err != nil {
+			return nil, errors.Wrap(err, "scan legacy principals")
+		}
+
+		for _, lp := range legacyPrincipals {
+			var count int64
+			db.Model(&Tunnel{}).Where("principal_id = ?", lp.ID).Count(&count)
+			if count > 0 {
+				continue
+			}
+
+			if lp.Token == "" || lp.Subdomain == "" {
+				continue
+			}
+
+			err = db.Create(&Tunnel{
+				PrincipalID: lp.ID,
+				Name:        "Default",
+				Token:       lp.Token,
+				Subdomain:   lp.Subdomain,
+				LastTCPPort: lp.LastTCPPort,
+			}).Error
+			if err != nil {
+				// Log error but continue
+				log.Error("Failed to migrate legacy principal", "id", lp.ID, "error", err)
+			}
+		}
 	}
 	return &DB{db}, nil
 }

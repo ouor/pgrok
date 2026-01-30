@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -122,8 +124,118 @@ func startWebServer(config *conf.Config, db *database.DB) {
 			f.Get("/user-info", func(r flamego.Render, principle *database.Principal) {
 				r.JSON(http.StatusOK, map[string]string{
 					"displayName": principle.DisplayName,
-					"token":       principle.Token,
-					"url":         config.Proxy.Scheme + "://" + principle.Subdomain + "." + config.Proxy.Domain,
+				})
+			})
+
+			f.Get("/tunnels", func(c flamego.Context, r flamego.Render, principle *database.Principal) {
+				tunnels, err := db.GetTunnelsByPrincipalID(c.Request().Context(), principle.ID)
+				if err != nil {
+					r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to get tunnels: %v", err))
+					return
+				}
+
+				// Transform to response format if needed, or return directly.
+				// We want to verify the URL construction logic
+				type tunnelResponse struct {
+					*database.Tunnel
+					URL string `json:"url"`
+				}
+				resp := make([]tunnelResponse, len(tunnels))
+				for i, t := range tunnels {
+					resp[i] = tunnelResponse{
+						Tunnel: t,
+						URL:    config.Proxy.Scheme + "://" + t.Subdomain + "." + config.Proxy.Domain,
+					}
+				}
+				r.JSON(http.StatusOK, resp)
+			})
+
+			f.Post("/tunnels", func(c flamego.Context, r flamego.Render, principle *database.Principal) {
+				// Create a new tunnel with random token and default name
+				// Subdomain collision might happen, so we might want to randomize it or let user specify.
+				// For now, let's generate a random subdomain to avoid collision
+				randomSuffix := strutil.MustRandomChars(6)
+				subdomain := fmt.Sprintf("%s-%s", strings.Split(principle.Identifier, "@")[0], randomSuffix)
+
+				normalizedSubdomain, err := userutil.NormalizeIdentifier(subdomain)
+				if err != nil {
+					r.PlainText(http.StatusBadRequest, fmt.Sprintf("Invalid subdomain: %v", err))
+					return
+				}
+
+				tunnel, err := db.CreateTunnel(c.Request().Context(), database.CreateTunnelOptions{
+					PrincipalID: principle.ID,
+					Name:        fmt.Sprintf("Tunnel %s", randomSuffix),
+					Token:       cryptoutil.SHA1(strutil.MustRandomChars(10)),
+					Subdomain:   normalizedSubdomain,
+				})
+				if err != nil {
+					r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to create tunnel: %v", err))
+					return
+				}
+				r.JSON(http.StatusOK, tunnel)
+			})
+
+			f.Delete("/tunnels/{id}", func(c flamego.Context, r flamego.Render, principle *database.Principal) {
+				id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+				if id <= 0 {
+					r.PlainText(http.StatusBadRequest, "Invalid tunnel ID")
+					return
+				}
+				err := db.DeleteTunnelByID(c.Request().Context(), id, principle.ID)
+				if err != nil {
+					r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to delete tunnel: %v", err))
+					return
+				}
+				r.PlainText(http.StatusOK, "OK")
+			})
+
+			f.Patch("/tunnels/{id}", func(c flamego.Context, r flamego.Render, principle *database.Principal) {
+				id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+				if id <= 0 {
+					r.PlainText(http.StatusBadRequest, "Invalid tunnel ID")
+					return
+				}
+
+				var form struct {
+					Subdomain string `json:"subdomain"`
+				}
+				err := json.NewDecoder(c.Request().Request.Body).Decode(&form)
+				if err != nil {
+					r.PlainText(http.StatusBadRequest, "Invalid request body")
+					return
+				}
+
+				subdomain, err := userutil.NormalizeIdentifier(form.Subdomain)
+				if err != nil {
+					r.PlainText(http.StatusBadRequest, fmt.Sprintf("Invalid subdomain: %v", err))
+					return
+				}
+
+				// Security check: ensure tunnel belongs to user (DeleteTunnel checks it, UpdateTunnelSubdomain does not yet)
+				// We should verify ownership before update.
+				t, err := db.GetTunnelByID(c.Request().Context(), id)
+				if err != nil {
+					r.PlainText(http.StatusNotFound, "Tunnel not found")
+					return
+				}
+				if t.PrincipalID != principle.ID {
+					r.PlainText(http.StatusForbidden, "Access denied")
+					return
+				}
+
+				err = db.UpdateTunnelSubdomain(c.Request().Context(), id, subdomain)
+				if err != nil {
+					if err == database.ErrSubdomainTaken {
+						r.PlainText(http.StatusConflict, "Subdomain is already taken")
+						return
+					}
+					r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to update subdomain: %v", err))
+					return
+				}
+				r.JSON(http.StatusOK, map[string]string{
+					"subdomain": subdomain,
+					"url":       config.Proxy.Scheme + "://" + subdomain + "." + config.Proxy.Domain,
 				})
 			})
 		},
@@ -216,24 +328,42 @@ func startWebServer(config *conf.Config, db *database.DB) {
 				return
 			}
 
-			subdomain, err := userutil.NormalizeIdentifier(userInfo.Identifier)
-			if err != nil {
-				r.PlainText(http.StatusBadRequest, fmt.Sprintf("Failed to normalize identifier: %v", err))
-				return
-			}
-
 			principle, err := db.UpsertPrincipal(
 				c.Request().Context(),
 				database.UpsertPrincipalOptions{
 					Identifier:  userInfo.Identifier,
 					DisplayName: userInfo.DisplayName,
-					Token:       cryptoutil.SHA1(strutil.MustRandomChars(10)),
-					Subdomain:   subdomain,
 				},
 			)
 			if err != nil {
 				r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to upsert principle: %v", err))
 				return
+			}
+
+			// Create a default tunnel if none exists
+			tunnels, err := db.GetTunnelsByPrincipalID(c.Request().Context(), principle.ID)
+			if err != nil {
+				r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to get tunnels: %v", err))
+				return
+			}
+
+			if len(tunnels) == 0 {
+				subdomain, err := userutil.NormalizeIdentifier(userInfo.Identifier)
+				if err != nil {
+					r.PlainText(http.StatusBadRequest, fmt.Sprintf("Failed to normalize identifier: %v", err))
+					return
+				}
+
+				_, err = db.CreateTunnel(c.Request().Context(), database.CreateTunnelOptions{
+					PrincipalID: principle.ID,
+					Name:        "Default",
+					Token:       cryptoutil.SHA1(strutil.MustRandomChars(10)),
+					Subdomain:   subdomain,
+				})
+				if err != nil {
+					r.PlainText(http.StatusInternalServerError, fmt.Sprintf("Failed to create default tunnel: %v", err))
+					return
+				}
 			}
 
 			s.Set("userID", principle.ID)

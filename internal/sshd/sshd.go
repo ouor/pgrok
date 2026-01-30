@@ -27,13 +27,14 @@ func Start(
 ) error {
 	config := &ssh.ServerConfig{
 		PasswordCallback: func(conn ssh.ConnMetadata, token []byte) (*ssh.Permissions, error) {
-			principal, err := db.GetPrincipalByToken(context.Background(), string(token))
+			tunnel, err := db.GetTunnelByToken(context.Background(), string(token))
 			if err != nil {
 				return nil, err
 			}
 			return &ssh.Permissions{
 				Extensions: map[string]string{
-					"principal-id": strconv.FormatInt(principal.ID, 10),
+					"principal-id": strconv.FormatInt(tunnel.PrincipalID, 10),
+					"tunnel-id":    strconv.FormatInt(tunnel.ID, 10),
 				},
 			}, nil
 		},
@@ -107,13 +108,21 @@ func Start(
 				return
 			}
 
+			tunnelID, _ := strconv.ParseInt(serverConn.Permissions.Extensions["tunnel-id"], 10, 64)
+			tunnel, err := db.GetTunnelByID(ctx, tunnelID)
+			if err != nil {
+				logger.Error("Failed to get tunnel", "error", err)
+				return
+			}
+
 			client := &Client{
 				logger:     logger,
 				db:         db,
 				serverConn: serverConn,
 				principal:  principal,
+				tunnel:     tunnel,
 				protocol:   "http",
-				host:       principal.Subdomain + "." + proxy.Domain,
+				host:       tunnel.Subdomain + "." + proxy.Domain,
 			}
 			for req := range reqs {
 				switch req.Type {
